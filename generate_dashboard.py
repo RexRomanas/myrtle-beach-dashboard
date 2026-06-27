@@ -8,23 +8,25 @@ def get_tide_data():
     station_id = "8661070"
     base_url = "https://noaa.gov"
 
+    # Fetch a wider 3-day window to eliminate timezone/midnight clipping issues
     today = datetime.now()
-    tomorrow = today + timedelta(days=1)
+    begin_date = (today - timedelta(days=1)).strftime("%Y%m%d")
+    end_date = (today + timedelta(days=2)).strftime("%Y%m%d")
 
     params = {
-        "begin_date": today.strftime("%Y%m%d"),
-        "end_date": tomorrow.strftime("%Y%m%d"),
+        "begin_date": begin_date,
+        "end_date": end_date,
         "station": station_id,
         "product": "predictions",
         "datum": "MLLW",
-        "time_zone": "lst_ldt",  # Local standard/daylight time
-        "interval": "hilo",      # Only high/low tides
+        "time_zone": "lst_ldt",  # Local Standard / Daylight Time
+        "interval": "hilo",      # High and low tides only
         "units": "english",
         "format": "json"
     }
 
     try:
-        response = requests.get(base_url, params=params).json()
+        response = requests.get(base_url, params=params, timeout=15).json()
         return response.get("predictions", [])
     except Exception as e:
         print(f"Error fetching tide data: {e}")
@@ -37,7 +39,7 @@ def get_weather_data():
     url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto"
 
     try:
-        return requests.get(url).json()
+        return requests.get(url, timeout=15).json()
     except Exception as e:
         print(f"Error fetching weather data: {e}")
         return None
@@ -45,9 +47,10 @@ def get_weather_data():
 
 def interpret_wmo_code(code):
     """Maps WMO Weather codes to a simple text description."""
-    if code in [0, 1]:
+    code = int(code) if code is not None else -1
+    if code in [0]:
         return "Clear"
-    elif code in [2, 3]:
+    elif code in [1, 2, 3]:
         return "Cloudy"
     elif code in [45, 48]:
         return "Foggy"
@@ -57,7 +60,7 @@ def interpret_wmo_code(code):
         return "Snow"
     elif code in [95, 96, 99]:
         return "T-Storm"
-    return "Unknown"
+    return "Overcast"
 
 
 def draw_dashboard(tides, weather):
@@ -66,36 +69,38 @@ def draw_dashboard(tides, weather):
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    # Draw layout boundaries
+    # Draw layout grids
     draw.line([(400, 0), (400, 480)], fill=0, width=2)  # Middle vertical split
     draw.line([(0, 240), (800, 240)], fill=0, width=1)  # Horizontal sub-split
+
+    # Set dates based on local runtime target contexts
+    today_dt = datetime.now()
+    tomorrow_dt = today_dt + timedelta(days=1)
+    
+    today_str = today_dt.strftime("%Y-%m-%d")
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
     # --- TOP LEFT: TODAY'S WEATHER ---
     draw.text((20, 15), "TODAY'S WEATHER", fill=0)
     if weather and "daily" in weather and "hourly" in weather:
-        # Get Max/Min temperature arrays (Index 0 = Today)
         max_t = weather["daily"]["temperature_2m_max"][0]
         min_t = weather["daily"]["temperature_2m_min"][0]
         draw.text((20, 40), f"High: {max_t}F  |  Low: {min_t}F", fill=0)
 
-        # Open-Meteo hourly lists contain 24 entries per day. 
-        # Index 9 = 9:00 AM, Index 15 = 3:00 PM, Index 21 = 9:00 PM
+        # Safely capture morning (9 AM), afternoon (3 PM), evening (9 PM) indices
         h_temps = weather["hourly"]["temperature_2m"]
         h_codes = weather["hourly"]["weather_code"]
 
-        try:
-            draw.text((20, 80), f"Morning (9am):   {h_temps[9]}F - {interpret_wmo_code(h_codes[9])}", fill=0)
-            draw.text((20, 120), f"Afternoon (3pm): {h_temps[15]}F - {interpret_wmo_code(h_codes[15])}", fill=0)
-            draw.text((20, 160), f"Evening (9pm):   {h_temps[21]}F - {interpret_wmo_code(h_codes[21])}", fill=0)
-        except Exception as mix_err:
-            print(f"Error drawing hourly text segments: {mix_err}")
+        # Index math: Open-Meteo starts today at index 0. 9=9am, 15=3pm, 21=9pm
+        draw.text((20, 80), f"Morning (9am):   {h_temps[9]}F - {interpret_wmo_code(h_codes[9])}", fill=0)
+        draw.text((20, 120), f"Afternoon (3pm): {h_temps[15]}F - {interpret_wmo_code(h_codes[15])}", fill=0)
+        draw.text((20, 160), f"Evening (9pm):   {h_temps[21]}F - {interpret_wmo_code(h_codes[21])}", fill=0)
     else:
         draw.text((20, 40), "Weather data missing or unavailable.", fill=0)
 
     # --- BOTTOM LEFT: TOMORROW'S WEATHER ---
     draw.text((20, 255), "TOMORROW'S WEATHER", fill=0)
     if weather and "daily" in weather:
-        # Index 1 corresponds to Tomorrow
         max_t_tom = weather["daily"]["temperature_2m_max"][1]
         min_t_tom = weather["daily"]["temperature_2m_min"][1]
         cond_tom = interpret_wmo_code(weather["daily"]["weather_code"][1])
@@ -105,9 +110,6 @@ def draw_dashboard(tides, weather):
         draw.text((20, 370), f"Low: {min_t_tom}F", fill=0)
 
     # --- RIGHT PANEL: TIDES (TODAY & TOMORROW) ---
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-
     draw.text((420, 15), f"TIDES: TODAY ({today_str})", fill=0)
     draw.text((420, 255), f"TIDES: TOMORROW ({tomorrow_str})", fill=0)
 
@@ -116,15 +118,15 @@ def draw_dashboard(tides, weather):
 
     if tides:
         for t in tides:
-            t_time_str = t["t"]  # Format from NOAA: "2026-06-27 04:12"
+            t_time_str = t["t"]  # Structure: "2026-06-27 04:12"
             t_type = "HIGH" if t["type"] == "H" else "LOW"
             t_height = t["v"]
 
-            # Safely extract just the time portion (HH:MM)
-            time_only = t_time_str.split(" ")[1] if " " in t_time_str else t_time_str
-            display_text = f"{time_only} - {t_type} ({t_height} ft)"
+            # Isolate just the HH:MM timestamp segment cleanly
+            time_part = t_time_str.split(" ")[1] if " " in t_time_str else t_time_str
+            display_text = f"{time_part} - {t_type} ({t_height} ft)"
 
-            # Populate text into the appropriate panel layout
+            # Assign values using safe containment comparisons
             if today_str in t_time_str:
                 if today_y < 220:
                     draw.text((420, today_y), display_text, fill=0)
@@ -136,10 +138,10 @@ def draw_dashboard(tides, weather):
     else:
         draw.text((420, 50), "No tide predictions available.", fill=0)
 
-    # Display generation stamp at the bottom
-    draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=0)
+    # Output generation stamp at baseline tracker
+    draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC", fill=0)
 
-    # Convert to standard 1-bit binary pixel map for crisp e-paper reading
+    # Convert mapping configuration array to raw binary monochrome matrix map
     img_bw = img.convert("1")
     img_bw.save("dashboard.png")
     print("Dashboard snapshot 'dashboard.png' created successfully.")
