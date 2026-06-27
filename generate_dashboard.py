@@ -34,10 +34,10 @@ def get_tide_data():
 
 
 def get_weather_data():
-    """Fetches weather data from Open-Meteo for Myrtle Beach coordinates."""
-    # Myrtle Beach, SC Coordinates
+    """Fetches weather data from Open-Meteo for Myrtle Beach coordinates in Fahrenheit."""
     lat, lon = 33.6891, -78.8867
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto"
+    # FIX: Explicitly added temperature_unit=fahrenheit to the API parameters
+    url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto"
 
     try:
         data = requests.get(url).json()
@@ -66,12 +66,8 @@ def interpret_wmo_code(code):
 
 def draw_dashboard(tides, weather):
     """Draws an 800x480 black and white layout."""
-    # Create 1-bit black and white image (0 = Black, 255 = White)
     img = Image.new("L", (800, 480), 255)
     draw = ImageDraw.Draw(img)
-
-    # Use default bitmap fonts if true-type files aren't in the repo.
-    # For a prettier look, you can place a .ttf file in the repo and load it via ImageFont.truetype()
     font = ImageFont.load_default()
 
     # Draw layout grids
@@ -85,25 +81,13 @@ def draw_dashboard(tides, weather):
         min_t = weather["daily"]["temperature_2m_min"][0]
         draw.text((20, 40), f"High: {max_t}°F  |  Low: {min_t}°F", fill=0)
 
-        # Parse morning (9 AM), afternoon (3 PM), evening (9 PM)
+        # Parse morning (9 AM), afternoon (3 PM), evening (9 PM) indexes from the 24h cycle
         hourly_temps = weather["hourly"]["temperature_2m"]
         hourly_codes = weather["hourly"]["weather_code"]
 
-        draw.text(
-            (20, 80),
-            f"Morning (9am):   {hourly_temps[9]}°F - {interpret_wmo_code(hourly_codes[9])}",
-            fill=0,
-        )
-        draw.text(
-            (20, 120),
-            f"Afternoon (3pm): {hourly_temps[15]}°F - {interpret_wmo_code(hourly_codes[15])}",
-            fill=0,
-        )
-        draw.text(
-            (20, 160),
-            f"Evening (9pm):   {hourly_temps[21]}°F - {interpret_wmo_code(hourly_codes[21])}",
-            fill=0,
-        )
+        draw.text((20, 80), f"Morning (9am):   {hourly_temps[9]}°F - {interpret_wmo_code(hourly_codes[9])}", fill=0)
+        draw.text((20, 120), f"Afternoon (3pm): {hourly_temps[15]}°F - {interpret_wmo_code(hourly_codes[15])}", fill=0)
+        draw.text((20, 160), f"Evening (9pm):   {hourly_temps[21]}°F - {interpret_wmo_code(hourly_codes[21])}", fill=0)
 
     # --- BOTTOM LEFT: TOMORROW'S WEATHER ---
     draw.text((20, 255), "TOMORROW'S WEATHER", fill=0)
@@ -126,30 +110,32 @@ def draw_dashboard(tides, weather):
     tomorrow_y = 290
 
     for t in tides:
-        # Expected time format from NOAA: "2026-06-27 04:12"
-        t_time = t["t"]
+        # Expected string from NOAA API looks like: "2026-06-27 04:12"
+        t_time_str = t["t"]
         t_type = "HIGH" if t["type"] == "H" else "LOW"
         t_height = t["v"]
 
-        display_text = f"{t_time.split(' ')[1]} - {t_type} ({t_height} ft)"
+        # Extract only the time portion (HH:MM) for cleaner e-paper rendering
+        time_only = t_time_str.split(" ")[1]
+        display_text = f"{time_only} - {t_type} ({t_height} ft)"
 
-        if t_time.startswith(today_str):
+        # FIX: Swapped .startswith() for explicit substring cleaning to guarantee clean evaluation
+        if t_time_str.strip().startswith(today_str):
             if today_y < 220:
                 draw.text((420, today_y), display_text, fill=0)
                 today_y += 35
-        elif t_time.startswith(tomorrow_str):
+        elif t_time_str.strip().startswith(tomorrow_str):
             if tomorrow_y < 460:
                 draw.text((420, tomorrow_y), display_text, fill=0)
                 tomorrow_y += 35
 
-    # Timestamp the generation at the bottom
+    # Timestamp generation
     draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=0)
 
-    # Save as black and white (1-bit pixels, dithered or mapped to strictly B&W)
-    # Convert 'L' (grayscale) to '1' (pure binary black/white) for epaper friendliness
+    # Save out as pure 1-bit image format for e-paper
     img_bw = img.convert("1")
     img_bw.save("dashboard.png")
-    print("Dashboard snapshot 'dashboard.png' created successfully.")
+    print("Dashboard snapshot 'dashboard.png' created successfully with updates.")
 
 
 if __name__ == "__main__":
