@@ -1,17 +1,38 @@
 from datetime import datetime, timedelta
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from PIL import Image, ImageDraw, ImageFont
 
 
-def get_tide_data():
+def create_retry_session():
+    """Creates a requests session that automatically retries failed HTTP requests."""
+    session = requests.Session()
+    
+    # Configure retry logic: 
+    # Try up to 4 times. Handle 500, 502, 503, 504 errors.
+    # Backoff factor 1 means it waits: 1s, 2s, 4s between tries.
+    retries = Retry(
+        total=4,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        raise_on_status=False
+    )
+    
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def get_tide_data(session):
     """Fetches high/low tide predictions from NOAA for Myrtle Beach (Springmaid Pier Station: 8661070)."""
     station_id = "8661070"
-    base_url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+    base_url = "https://noaa.gov"
 
     today = datetime.now()
     tomorrow = today + timedelta(days=1)
 
-    # Fixed: Added the required 'application' parameter to prevent NOAA 400 HTML rejection errors
     params = {
         "begin_date": today.strftime("%Y%m%d"),
         "end_date": tomorrow.strftime("%Y%m%d"),
@@ -21,15 +42,14 @@ def get_tide_data():
         "time_zone": "lst_ldt",  # Local standard/daylight time
         "interval": "hilo",      # High and low tides only
         "units": "english",
-        "application": "GithubDashboard",  # Required identifier for NOAA's API filter
+        "application": "GithubDashboard",
         "format": "json"
     }
 
     try:
-        response = requests.get(base_url, params=params, timeout=15)
-        # Check if the API threw an error or sent non-JSON code
+        response = session.get(base_url, params=params, timeout=15)
         if response.status_code != 200:
-            print(f"NOAA API HTTP Error: {response.status_code}")
+            print(f"NOAA API Error after retries: {response.status_code}")
             return []
         
         data = response.json()
@@ -39,24 +59,23 @@ def get_tide_data():
         return []
 
 
-def get_weather_data():
+def get_weather_data(session):
     """Fetches weather data from Open-Meteo for Myrtle Beach coordinates in Fahrenheit."""
     base_url = "https://open-meteo.com"
     
-    # Fixed: Parameter dictionary structure avoids mixing variables into explicit URL strings
     params = {
-        "latitude": "33.6891",
-        "longitude": "-78.8867",
-        "hourly": "temperature_2m,weather_code",
-        "daily": "temperature_2m_max,temperature_2m_min,weather_code",
+        "latitude": 33.6891,
+        "longitude": -78.8867,
+        "hourly": "temperature_2m",
+        "daily": "temperature_2m_max,temperature_2m_min",
         "temperature_unit": "fahrenheit",
         "timezone": "auto"
     }
 
     try:
-        response = requests.get(base_url, params=params, timeout=15)
+        response = session.get(base_url, params=params, timeout=15)
         if response.status_code != 200:
-            print(f"Open-Meteo HTTP Error: {response.status_code}")
+            print(f"Open-Meteo Error after retries: {response.status_code}")
             return None
         return response.json()
     except Exception as e:
@@ -64,56 +83,32 @@ def get_weather_data():
         return None
 
 
-def interpret_wmo_code(code):
-    """Maps WMO Weather codes safely to standard descriptive text string labels."""
-    if code is None:
-        return "Cloudy"
-    
-    c = int(code)
-    if c == 0: 
-        return "Clear"
-    elif c in [1, 2, 3]: 
-        return "Partly Cloudy"
-    elif c in [45, 48]: 
-        return "Foggy"
-    elif c in [51, 53, 55, 61, 63, 65, 80, 81, 82]: 
-        return "Rain"
-    elif c in [71, 73, 75, 77, 85, 86]: 
-        return "Snow"
-    elif c in [95, 96, 99]: 
-        return "Thunderstorm"
-    return "Cloudy"
-
-
 def draw_dashboard(tides, weather):
-    """Draws an 800x480 black and white layout using original visual structure."""
+    """Draws an 800x480 black and white layout."""
     img = Image.new("L", (800, 480), 255)
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    # Draw grid boundaries
-    draw.line([(400, 0), (400, 480)], fill=0, width=2)  # Middle vertical split
-    draw.line([(0, 240), (800, 240)], fill=0, width=1)  # Horizontal sub-split
+    # Draw grid panels
+    draw.line([(400, 0), (400, 480)], fill=0, width=2)  # Vertical split
+    draw.line([(0, 240), (800, 240)], fill=0, width=1)  # Horizontal split
 
-    # Set up date filter strings matching "YYYY-MM-DD"
     today_str = datetime.now().strftime("%Y-%m-%d")
     tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     # --- TOP LEFT: TODAY'S WEATHER ---
     draw.text((20, 15), "TODAY'S WEATHER", fill=0)
     if weather and "daily" in weather and "hourly" in weather:
-        # Access day index positions safely
         max_t = weather["daily"]["temperature_2m_max"][0]
         min_t = weather["daily"]["temperature_2m_min"][0]
         draw.text((20, 40), f"High: {max_t}F  |  Low: {min_t}F", fill=0)
 
-        # Parse morning (9 AM), afternoon (3 PM), evening (9 PM) from the 24h cycle
         hourly_temps = weather["hourly"]["temperature_2m"]
-        hourly_codes = weather["hourly"]["weather_code"]
-
-        draw.text((20, 80), f"Morning (9am):   {hourly_temps[9]}F - {interpret_wmo_code(hourly_codes[9])}", fill=0)
-        draw.text((20, 120), f"Afternoon (3pm): {hourly_temps[15]}F - {interpret_wmo_code(hourly_codes[15])}", fill=0)
-        draw.text((20, 160), f"Evening (9pm):   {hourly_temps[21]}F - {interpret_wmo_code(hourly_codes[21])}", fill=0)
+        
+        # Pull explicit array slices for 9am, 3pm, and 9pm safely
+        draw.text((20, 80), f"Morning (9am):   {hourly_temps[9]}F", fill=0)
+        draw.text((20, 120), f"Afternoon (3pm): {hourly_temps[15]}F", fill=0)
+        draw.text((20, 160), f"Evening (9pm):   {hourly_temps[21]}F", fill=0)
     else:
         draw.text((20, 40), "Weather data missing or unavailable.", fill=0)
 
@@ -122,11 +117,11 @@ def draw_dashboard(tides, weather):
     if weather and "daily" in weather:
         max_t_tom = weather["daily"]["temperature_2m_max"][1]
         min_t_tom = weather["daily"]["temperature_2m_min"][1]
-        cond_tom = interpret_wmo_code(weather["daily"]["weather_code"][1])
         
-        draw.text((20, 290), f"Forecast: {cond_tom}", fill=0)
-        draw.text((20, 330), f"High: {max_t_tom}F", fill=0)
-        draw.text((20, 370), f"Low: {min_t_tom}F", fill=0)
+        draw.text((20, 290), f"High: {max_t_tom}F", fill=0)
+        draw.text((20, 330), f"Low: {min_t_tom}F", fill=0)
+    else:
+        draw.text((20, 290), "Weather data unavailable.", fill=0)
 
     # --- RIGHT PANEL: TIDES (TODAY & TOMORROW) ---
     draw.text((420, 15), f"TIDES: TODAY ({today_str})", fill=0)
@@ -137,15 +132,14 @@ def draw_dashboard(tides, weather):
 
     if tides:
         for t in tides:
-            t_time_str = t["t"]  # Structure from API: "2026-06-27 04:12"
+            t_time_str = t["t"]  # Structure: "2026-06-27 04:12"
             t_type = "HIGH" if t["type"] == "H" else "LOW"
             t_height = t["v"]
 
-            # Safely isolate only the HH:MM time section out of the text string
+            # Split by space and take the second index to extract HH:MM cleanly
             time_part = t_time_str.split(" ")[1] if " " in t_time_str else t_time_str
             display_text = f"{time_part} - {t_type} ({t_height} ft)"
 
-            # Use date substring checking to match layout panels cleanly
             if t_time_str.startswith(today_str):
                 if today_y < 220:
                     draw.text((420, today_y), display_text, fill=0)
@@ -155,18 +149,22 @@ def draw_dashboard(tides, weather):
                     draw.text((420, tomorrow_y), display_text, fill=0)
                     tomorrow_y += 35
     else:
-        draw.text((420, 50), "No tide predictions available.", fill=0)
+        draw.text((420, 50), "Tide metrics unavailable.", fill=0)
 
-    # Add a time update indicator stamp at the baseline boundary
+    # Footer timestamp
     draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=0)
 
-    # Output clean 1-bit binary image layout
+    # Convert mapping configuration array to raw binary monochrome image
     img_bw = img.convert("1")
     img_bw.save("dashboard.png")
-    print("Dashboard snapshot 'dashboard.png' updated successfully.")
+    print("Dashboard image 'dashboard.png' rendered successfully.")
 
 
 if __name__ == "__main__":
-    tide_predictions = get_tide_data()
-    weather_forecast = get_weather_data()
+    # Create the network session with automatic retry rules built-in
+    http_session = create_retry_session()
+    
+    tide_predictions = get_tide_data(http_session)
+    weather_forecast = get_weather_data(http_session)
+    
     draw_dashboard(tide_predictions, weather_forecast)
