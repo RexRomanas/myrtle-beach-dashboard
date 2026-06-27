@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import os
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
@@ -26,8 +25,7 @@ def get_tide_data():
 
     try:
         response = requests.get(base_url, params=params).json()
-        predictions = response.get("predictions", [])
-        return predictions
+        return response.get("predictions", [])
     except Exception as e:
         print(f"Error fetching tide data: {e}")
         return []
@@ -39,8 +37,7 @@ def get_weather_data():
     url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto"
 
     try:
-        data = requests.get(url).json()
-        return data
+        return requests.get(url).json()
     except Exception as e:
         print(f"Error fetching weather data: {e}")
         return None
@@ -76,12 +73,12 @@ def draw_dashboard(tides, weather):
     # --- TOP LEFT: TODAY'S WEATHER ---
     draw.text((20, 15), "TODAY'S WEATHER", fill=0)
     if weather and "daily" in weather and "hourly" in weather:
-        # Get Max/Min for index 0 (Today)
+        # Get Max/Min temperature arrays (Index 0 = Today)
         max_t = weather["daily"]["temperature_2m_max"][0]
         min_t = weather["daily"]["temperature_2m_min"][0]
         draw.text((20, 40), f"High: {max_t}F  |  Low: {min_t}F", fill=0)
 
-        # Open-Meteo splits hourly data into 24-element blocks per day.
+        # Open-Meteo hourly lists contain 24 entries per day. 
         # Index 9 = 9:00 AM, Index 15 = 3:00 PM, Index 21 = 9:00 PM
         h_temps = weather["hourly"]["temperature_2m"]
         h_codes = weather["hourly"]["weather_code"]
@@ -92,6 +89,8 @@ def draw_dashboard(tides, weather):
             draw.text((20, 160), f"Evening (9pm):   {h_temps[21]}F - {interpret_wmo_code(h_codes[21])}", fill=0)
         except Exception as mix_err:
             print(f"Error drawing hourly text segments: {mix_err}")
+    else:
+        draw.text((20, 40), "Weather data missing or unavailable.", fill=0)
 
     # --- BOTTOM LEFT: TOMORROW'S WEATHER ---
     draw.text((20, 255), "TOMORROW'S WEATHER", fill=0)
@@ -117,15 +116,15 @@ def draw_dashboard(tides, weather):
 
     if tides:
         for t in tides:
-            t_time_str = t["t"] # Expected string: "2026-06-27 04:12"
+            t_time_str = t["t"]  # Format from NOAA: "2026-06-27 04:12"
             t_type = "HIGH" if t["type"] == "H" else "LOW"
             t_height = t["v"]
 
-            # Extract the raw time value (HH:MM)
+            # Safely extract just the time portion (HH:MM)
             time_only = t_time_str.split(" ")[1] if " " in t_time_str else t_time_str
             display_text = f"{time_only} - {t_type} ({t_height} ft)"
 
-            # Explicit clean checks against data strings
+            # Populate text into the appropriate panel layout
             if today_str in t_time_str:
                 if today_y < 220:
                     draw.text((420, today_y), display_text, fill=0)
@@ -137,13 +136,13 @@ def draw_dashboard(tides, weather):
     else:
         draw.text((420, 50), "No tide predictions available.", fill=0)
 
-    # Timestamp generation info
+    # Display generation stamp at the bottom
     draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=0)
 
-    # Save out as pure 1-bit image format for e-paper
+    # Convert to standard 1-bit binary pixel map for crisp e-paper reading
     img_bw = img.convert("1")
     img_bw.save("dashboard.png")
-    print("Dashboard snapshot 'dashboard.png' re-generated successfully.")
+    print("Dashboard snapshot 'dashboard.png' created successfully.")
 
 
 if __name__ == "__main__":
