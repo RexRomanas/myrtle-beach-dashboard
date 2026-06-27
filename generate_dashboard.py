@@ -19,9 +19,9 @@ def get_tide_data():
         "product": "predictions",
         "datum": "MLLW",
         "time_zone": "lst_ldt",  # Local standard/daylight time
-        "interval": "hilo",  # Only high/low tides
+        "interval": "hilo",      # Only high/low tides
         "units": "english",
-        "format": "json",
+        "format": "json"
     }
 
     try:
@@ -36,7 +36,6 @@ def get_tide_data():
 def get_weather_data():
     """Fetches weather data from Open-Meteo for Myrtle Beach coordinates in Fahrenheit."""
     lat, lon = 33.6891, -78.8867
-    # FIX: Explicitly added temperature_unit=fahrenheit to the API parameters
     url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto"
 
     try:
@@ -70,34 +69,41 @@ def draw_dashboard(tides, weather):
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    # Draw layout grids
+    # Draw layout boundaries
     draw.line([(400, 0), (400, 480)], fill=0, width=2)  # Middle vertical split
     draw.line([(0, 240), (800, 240)], fill=0, width=1)  # Horizontal sub-split
 
     # --- TOP LEFT: TODAY'S WEATHER ---
     draw.text((20, 15), "TODAY'S WEATHER", fill=0)
-    if weather and "daily" in weather:
+    if weather and "daily" in weather and "hourly" in weather:
+        # Get Max/Min for index 0 (Today)
         max_t = weather["daily"]["temperature_2m_max"][0]
         min_t = weather["daily"]["temperature_2m_min"][0]
-        draw.text((20, 40), f"High: {max_t}°F  |  Low: {min_t}°F", fill=0)
+        draw.text((20, 40), f"High: {max_t}F  |  Low: {min_t}F", fill=0)
 
-        # Parse morning (9 AM), afternoon (3 PM), evening (9 PM) indexes from the 24h cycle
-        hourly_temps = weather["hourly"]["temperature_2m"]
-        hourly_codes = weather["hourly"]["weather_code"]
+        # Open-Meteo splits hourly data into 24-element blocks per day.
+        # Index 9 = 9:00 AM, Index 15 = 3:00 PM, Index 21 = 9:00 PM
+        h_temps = weather["hourly"]["temperature_2m"]
+        h_codes = weather["hourly"]["weather_code"]
 
-        draw.text((20, 80), f"Morning (9am):   {hourly_temps[9]}°F - {interpret_wmo_code(hourly_codes[9])}", fill=0)
-        draw.text((20, 120), f"Afternoon (3pm): {hourly_temps[15]}°F - {interpret_wmo_code(hourly_codes[15])}", fill=0)
-        draw.text((20, 160), f"Evening (9pm):   {hourly_temps[21]}°F - {interpret_wmo_code(hourly_codes[21])}", fill=0)
+        try:
+            draw.text((20, 80), f"Morning (9am):   {h_temps[9]}F - {interpret_wmo_code(h_codes[9])}", fill=0)
+            draw.text((20, 120), f"Afternoon (3pm): {h_temps[15]}F - {interpret_wmo_code(h_codes[15])}", fill=0)
+            draw.text((20, 160), f"Evening (9pm):   {h_temps[21]}F - {interpret_wmo_code(h_codes[21])}", fill=0)
+        except Exception as mix_err:
+            print(f"Error drawing hourly text segments: {mix_err}")
 
     # --- BOTTOM LEFT: TOMORROW'S WEATHER ---
     draw.text((20, 255), "TOMORROW'S WEATHER", fill=0)
     if weather and "daily" in weather:
+        # Index 1 corresponds to Tomorrow
         max_t_tom = weather["daily"]["temperature_2m_max"][1]
         min_t_tom = weather["daily"]["temperature_2m_min"][1]
         cond_tom = interpret_wmo_code(weather["daily"]["weather_code"][1])
+        
         draw.text((20, 290), f"Forecast: {cond_tom}", fill=0)
-        draw.text((20, 330), f"High: {max_t_tom}°F", fill=0)
-        draw.text((20, 370), f"Low: {min_t_tom}°F", fill=0)
+        draw.text((20, 330), f"High: {max_t_tom}F", fill=0)
+        draw.text((20, 370), f"Low: {min_t_tom}F", fill=0)
 
     # --- RIGHT PANEL: TIDES (TODAY & TOMORROW) ---
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -109,33 +115,35 @@ def draw_dashboard(tides, weather):
     today_y = 50
     tomorrow_y = 290
 
-    for t in tides:
-        # Expected string from NOAA API looks like: "2026-06-27 04:12"
-        t_time_str = t["t"]
-        t_type = "HIGH" if t["type"] == "H" else "LOW"
-        t_height = t["v"]
+    if tides:
+        for t in tides:
+            t_time_str = t["t"] # Expected string: "2026-06-27 04:12"
+            t_type = "HIGH" if t["type"] == "H" else "LOW"
+            t_height = t["v"]
 
-        # Extract only the time portion (HH:MM) for cleaner e-paper rendering
-        time_only = t_time_str.split(" ")[1]
-        display_text = f"{time_only} - {t_type} ({t_height} ft)"
+            # Extract the raw time value (HH:MM)
+            time_only = t_time_str.split(" ")[1] if " " in t_time_str else t_time_str
+            display_text = f"{time_only} - {t_type} ({t_height} ft)"
 
-        # FIX: Swapped .startswith() for explicit substring cleaning to guarantee clean evaluation
-        if t_time_str.strip().startswith(today_str):
-            if today_y < 220:
-                draw.text((420, today_y), display_text, fill=0)
-                today_y += 35
-        elif t_time_str.strip().startswith(tomorrow_str):
-            if tomorrow_y < 460:
-                draw.text((420, tomorrow_y), display_text, fill=0)
-                tomorrow_y += 35
+            # Explicit clean checks against data strings
+            if today_str in t_time_str:
+                if today_y < 220:
+                    draw.text((420, today_y), display_text, fill=0)
+                    today_y += 35
+            elif tomorrow_str in t_time_str:
+                if tomorrow_y < 460:
+                    draw.text((420, tomorrow_y), display_text, fill=0)
+                    tomorrow_y += 35
+    else:
+        draw.text((420, 50), "No tide predictions available.", fill=0)
 
-    # Timestamp generation
+    # Timestamp generation info
     draw.text((10, 460), f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=0)
 
     # Save out as pure 1-bit image format for e-paper
     img_bw = img.convert("1")
     img_bw.save("dashboard.png")
-    print("Dashboard snapshot 'dashboard.png' created successfully with updates.")
+    print("Dashboard snapshot 'dashboard.png' re-generated successfully.")
 
 
 if __name__ == "__main__":
